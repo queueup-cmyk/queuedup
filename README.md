@@ -1,9 +1,9 @@
-# QueueUp
+# QueuedUp
 Helping Discord gaming communities organise tournaments, player signups, waiting lists and event reminders.
 
-## What is QueueUp?
+## What is QueuedUp?
 
-QueueUp is a project exploring how to make organising gaming tournaments and events on Discord easier.
+QueuedUp is a project exploring how to make organising gaming tournaments and events on Discord easier.
 
 ## The Problem
 
