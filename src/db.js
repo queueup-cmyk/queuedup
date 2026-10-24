@@ -32,7 +32,15 @@ async function initDb() {
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
     CREATE TABLE IF NOT EXISTS registrations (
+      event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL,
+      joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (event_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS waitlist (
       event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
       user_id TEXT NOT NULL,
       joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
