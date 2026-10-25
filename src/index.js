@@ -25,8 +25,16 @@ const getRegistrations = id => db.all(
   [id]
 );
 
-function makeEventMessage(event, registrations) {
-  const shown = registrations.slice(0, 25).map((r, i) => `${i + 1}. <@${r.user_id}>`);
+
+function makeEventMessage(event, registrations, waitlist = []) {
+  const shown = registrations
+    .slice(0, 25)
+    .map((r, i) => `${i + 1}. <@${r.user_id}>`);
+
+  const waiting = waitlist
+    .slice(0, 25)
+    .map((r, i) => `${i + 1}. <@${r.user_id}>`);
+
   const embed = new EmbedBuilder()
     .setColor(0x20c7d9)
     .setTitle(event.title)
@@ -34,7 +42,15 @@ function makeEventMessage(event, registrations) {
     .addFields(
       {
         name: `Players (${Math.min(registrations.length, event.capacity)}/${event.capacity})`,
-        value: shown.length ? shown.join("\n").slice(0, 1024) : "No players registered yet."
+        value: shown.length
+          ? shown.join("\n").slice(0, 1024)
+          : "No players registered yet."
+      },
+      {
+        name: `Waitlist (${waitlist.length})`,
+        value: waiting.length
+          ? waiting.join("\n").slice(0, 1024)
+          : "No players on the waitlist."
       },
       {
         name: "Status",
@@ -56,17 +72,29 @@ function makeEventMessage(event, registrations) {
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(event.status !== "open")
   );
+
   return { embeds: [embed], components: [row] };
 }
+
 
 async function refreshEventMessage(id) {
   const event = getEvent(id);
   if (!event?.message_id) return;
+
   const channel = await client.channels.fetch(event.channel_id);
   if (!channel?.isTextBased()) return;
+
   const message = await channel.messages.fetch(event.message_id);
-  await message.edit(makeEventMessage(event, getRegistrations(id)));
+  const registrations = getRegistrations(id);
+
+  const waitlist = db.all(
+    "SELECT user_id FROM waitlist WHERE event_id = ? ORDER BY joined_at ASC, rowid ASC",
+    [id]
+  );
+
+  await message.edit(makeEventMessage(event, registrations, waitlist));
 }
+
 
 client.once(Events.ClientReady, c => console.log(`QueueUp is online as ${c.user.tag}`));
 
@@ -125,14 +153,24 @@ client.on(Events.InteractionCreate, async interaction => {
         await interaction.reply({ content: "Registration is closed.", ephemeral: true });
         return;
       }
-
       if (action === "join") {
-        const existing = db.get(
+        const registered = db.get(
           "SELECT 1 AS found FROM registrations WHERE event_id = ? AND user_id = ?",
           [id, interaction.user.id]
         );
-        if (existing) {
-          await interaction.reply({ content: "You're already registered.", ephemeral: true });
+
+        const waiting = db.get(
+          "SELECT 1 AS found FROM waitlist WHERE event_id = ? AND user_id = ?",
+          [id, interaction.user.id]
+        );
+
+        if (registered || waiting) {
+          await interaction.reply({
+            content: registered
+              ? "You're already registered."
+              : "You're already on the waitlist.",
+            ephemeral: true
+          });
           return;
         }
 
@@ -142,24 +180,69 @@ client.on(Events.InteractionCreate, async interaction => {
         ).count;
 
         if (count >= event.capacity) {
+          db.run(
+            "INSERT INTO waitlist (event_id, user_id) VALUES (?, ?)",
+            [id, interaction.user.id]
+          );
+
           await interaction.reply({
-            content: "This event is full. The waitlist isn't available yet.",
+            content: "The event is full, so you've been added to the waitlist.",
             ephemeral: true
           });
-          return;
-        }
+        } else {
+          db.run(
+            "INSERT INTO registrations (event_id, user_id) VALUES (?, ?)",
+            [id, interaction.user.id]
+          );
 
-        db.run("INSERT INTO registrations (event_id, user_id) VALUES (?, ?)", [id, interaction.user.id]);
-        await interaction.reply({ content: "You're registered. Good luck!", ephemeral: true });
+          await interaction.reply({
+            content: "You're registered. Good luck!",
+            ephemeral: true
+          });
+        }
       } else if (action === "leave") {
         const result = db.run(
           "DELETE FROM registrations WHERE event_id = ? AND user_id = ?",
           [id, interaction.user.id]
         );
-        await interaction.reply({
-          content: result.changes ? "You've left the event." : "You weren't registered.",
-          ephemeral: true
-        });
+
+        if (result.changes) {
+          const next = db.get(
+            "SELECT user_id FROM waitlist WHERE event_id = ? ORDER BY joined_at ASC, rowid ASC LIMIT 1",
+            [id]
+          );
+
+          if (next) {
+            db.run(
+              "DELETE FROM waitlist WHERE event_id = ? AND user_id = ?",
+              [id, next.user_id]
+            );
+
+            db.run(
+              "INSERT INTO registrations (event_id, user_id) VALUES (?, ?)",
+              [id, next.user_id]
+            );
+          }
+
+          await interaction.reply({
+            content: next
+              ? "You've left the event. The next player on the waitlist has been promoted."
+              : "You've left the event.",
+            ephemeral: true
+          });
+        } else {
+          const waiting = db.run(
+            "DELETE FROM waitlist WHERE event_id = ? AND user_id = ?",
+            [id, interaction.user.id]
+          );
+
+          await interaction.reply({
+            content: waiting.changes
+              ? "You've been removed from the waitlist."
+              : "You weren't registered or waitlisted.",
+            ephemeral: true
+          });
+        }
       }
 
       await refreshEventMessage(id);
