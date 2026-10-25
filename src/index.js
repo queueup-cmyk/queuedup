@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const {
@@ -10,6 +11,7 @@ const {
   GatewayIntentBits,
   PermissionFlagsBits
 } = require("discord.js");
+
 const db = require("./db");
 
 if (!process.env.DISCORD_TOKEN) {
@@ -19,12 +21,24 @@ if (!process.env.DISCORD_TOKEN) {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+const MODE_LABELS = {
+  casual: "Casual",
+  serious: "Serious",
+  esports: "Esports",
+  community: "Community"
+};
+
 const getEvent = id => db.get("SELECT * FROM events WHERE id = ?", [id]);
+
 const getRegistrations = id => db.all(
   "SELECT user_id FROM registrations WHERE event_id = ? ORDER BY joined_at ASC",
   [id]
 );
 
+const getWaitlist = id => db.all(
+  "SELECT user_id FROM waitlist WHERE event_id = ? ORDER BY joined_at ASC, rowid ASC",
+  [id]
+);
 
 function makeEventMessage(event, registrations, waitlist = []) {
   const shown = registrations
@@ -35,10 +49,12 @@ function makeEventMessage(event, registrations, waitlist = []) {
     .slice(0, 25)
     .map((r, i) => `${i + 1}. <@${r.user_id}>`);
 
+  const mode = MODE_LABELS[event.mode] || MODE_LABELS.casual;
+
   const embed = new EmbedBuilder()
     .setColor(0x20c7d9)
     .setTitle(event.title)
-    .setDescription("Register below to join this event.")
+    .setDescription(`**Mode:** ${mode}\nRegister below to join this event.`)
     .addFields(
       {
         name: `Players (${Math.min(registrations.length, event.capacity)}/${event.capacity})`,
@@ -54,7 +70,9 @@ function makeEventMessage(event, registrations, waitlist = []) {
       },
       {
         name: "Status",
-        value: event.status === "open" ? "Registration open" : "Registration closed",
+        value: event.status === "open"
+          ? "Registration open"
+          : "Registration closed",
         inline: true
       }
     )
@@ -76,7 +94,6 @@ function makeEventMessage(event, registrations, waitlist = []) {
   return { embeds: [embed], components: [row] };
 }
 
-
 async function refreshEventMessage(id) {
   const event = getEvent(id);
   if (!event?.message_id) return;
@@ -86,35 +103,41 @@ async function refreshEventMessage(id) {
 
   const message = await channel.messages.fetch(event.message_id);
   const registrations = getRegistrations(id);
-
-  const waitlist = db.all(
-    "SELECT user_id FROM waitlist WHERE event_id = ? ORDER BY joined_at ASC, rowid ASC",
-    [id]
-  );
+  const waitlist = getWaitlist(id);
 
   await message.edit(makeEventMessage(event, registrations, waitlist));
 }
 
-
-client.once(Events.ClientReady, c => console.log(`QueueUp is online as ${c.user.tag}`));
+client.once(Events.ClientReady, c => {
+  console.log(`QueueUp is online as ${c.user.tag}`);
+});
 
 client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === "ping") {
-        await interaction.reply({ content: "QueueUp is online.", ephemeral: true });
+        await interaction.reply({
+          content: "QueueUp is online.",
+          ephemeral: true
+        });
         return;
       }
 
       if (interaction.commandName === "event-create") {
         if (!interaction.inGuild()) {
-          await interaction.reply({ content: "Create events inside a server.", ephemeral: true });
+          await interaction.reply({
+            content: "Create events inside a server.",
+            ephemeral: true
+          });
           return;
         }
 
         const perms = interaction.memberPermissions;
-        if (!perms?.has(PermissionFlagsBits.ManageEvents) &&
-            !perms?.has(PermissionFlagsBits.ManageGuild)) {
+
+        if (
+          !perms?.has(PermissionFlagsBits.ManageEvents) &&
+          !perms?.has(PermissionFlagsBits.ManageGuild)
+        ) {
           await interaction.reply({
             content: "You need Manage Events or Manage Server permission.",
             ephemeral: true
@@ -124,35 +147,65 @@ client.on(Events.InteractionCreate, async interaction => {
 
         const title = interaction.options.getString("title", true).trim();
         const capacity = interaction.options.getInteger("capacity", true);
+        const mode = interaction.options.getString("mode") || "casual";
 
         const result = db.run(
-          "INSERT INTO events (guild_id, channel_id, title, capacity, created_by) VALUES (?, ?, ?, ?, ?)",
-          [interaction.guildId, interaction.channelId, title, capacity, interaction.user.id]
+          `INSERT INTO events
+            (guild_id, channel_id, title, capacity, created_by, mode)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            interaction.guildId,
+            interaction.channelId,
+            title,
+            capacity,
+            interaction.user.id,
+            mode
+          ]
         );
+
         const id = Number(result.lastInsertRowid);
         const event = getEvent(id);
-        const message = await interaction.channel.send(makeEventMessage(event, []));
+        const message = await interaction.channel.send(
+          makeEventMessage(event, [], [])
+        );
 
-        db.run("UPDATE events SET message_id = ? WHERE id = ?", [message.id, id]);
+        db.run(
+          "UPDATE events SET message_id = ? WHERE id = ?",
+          [message.id, id]
+        );
 
-        await interaction.reply({ content: `Event created: ${message.url}`, ephemeral: true });
+        await interaction.reply({
+          content: `Event created: ${message.url}`,
+          ephemeral: true
+        });
         return;
       }
     }
 
-    if (interaction.isButton() && interaction.customId.startsWith("queueup:")) {
+    if (
+      interaction.isButton() &&
+      interaction.customId.startsWith("queueup:")
+    ) {
       const [, action, rawId] = interaction.customId.split(":");
       const id = Number(rawId);
       const event = getEvent(id);
 
       if (!event || event.guild_id !== interaction.guildId) {
-        await interaction.reply({ content: "This event could not be found.", ephemeral: true });
+        await interaction.reply({
+          content: "This event could not be found.",
+          ephemeral: true
+        });
         return;
       }
+
       if (event.status !== "open") {
-        await interaction.reply({ content: "Registration is closed.", ephemeral: true });
+        await interaction.reply({
+          content: "Registration is closed.",
+          ephemeral: true
+        });
         return;
       }
+
       if (action === "join") {
         const registered = db.get(
           "SELECT 1 AS found FROM registrations WHERE event_id = ? AND user_id = ?",
@@ -208,7 +261,10 @@ client.on(Events.InteractionCreate, async interaction => {
 
         if (result.changes) {
           const next = db.get(
-            "SELECT user_id FROM waitlist WHERE event_id = ? ORDER BY joined_at ASC, rowid ASC LIMIT 1",
+            `SELECT user_id FROM waitlist
+             WHERE event_id = ?
+             ORDER BY joined_at ASC, rowid ASC
+             LIMIT 1`,
             [id]
           );
 
@@ -249,7 +305,12 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   } catch (error) {
     console.error("Interaction failed:", error);
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+
+    if (
+      interaction.isRepliable() &&
+      !interaction.replied &&
+      !interaction.deferred
+    ) {
       await interaction.reply({
         content: "Something went wrong. Please try again.",
         ephemeral: true

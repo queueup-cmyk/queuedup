@@ -1,3 +1,4 @@
+
 const initSqlJs = require("sql.js");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -48,12 +49,27 @@ async function initDb() {
     );
   `);
 
+  // Safely add mode to existing databases.
+  const eventColumns = db.exec("PRAGMA table_info(events)");
+  const hasMode = eventColumns[0]?.values.some(
+    column => column[1] === "mode"
+  );
+
+  if (!hasMode) {
+    db.run(
+      "ALTER TABLE events ADD COLUMN mode TEXT NOT NULL DEFAULT 'casual'"
+    );
+  }
+
   saveDb();
   return db;
 }
 
 function saveDb() {
-  if (!db) throw new Error("Database has not been initialised.");
+  if (!db) {
+    throw new Error("Database has not been initialised.");
+  }
+
   const bytes = db.export();
   fs.writeFileSync(dbPath, Buffer.from(bytes));
 }
@@ -76,6 +92,7 @@ function getLastInsertRowid() {
 
 function get(sql, params = []) {
   const statement = db.prepare(sql);
+
   try {
     statement.bind(params);
     return statement.step() ? statement.getAsObject() : undefined;
@@ -87,9 +104,14 @@ function get(sql, params = []) {
 function all(sql, params = []) {
   const statement = db.prepare(sql);
   const rows = [];
+
   try {
     statement.bind(params);
-    while (statement.step()) rows.push(statement.getAsObject());
+
+    while (statement.step()) {
+      rows.push(statement.getAsObject());
+    }
+
     return rows;
   } finally {
     statement.free();
